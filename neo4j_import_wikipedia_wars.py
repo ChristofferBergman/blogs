@@ -127,13 +127,6 @@ class WikipediaWarImporter:
         header_html, row_html = self._extract_header_and_rows(table)
         return TableSectionResult(header_html=header_html, row_html=row_html)
 
-    def _find_first_table_in_root(self, content_root: Tag) -> Optional[Tag]:
-        table = content_root.select_one("table.wikitable")
-        if table is not None:
-            return table
-
-        return content_root.find("table")
-
     def _fetch_html(self, url: str) -> str:
         response = self.http.get(url, timeout=30)
         response.raise_for_status()
@@ -173,20 +166,55 @@ class WikipediaWarImporter:
         start_level = self._heading_level(heading.name)
 
         for node in heading.find_all_next():
-            if node == heading:
-                continue
             if not isinstance(node, Tag):
                 continue
 
-            # Stop at next section heading of same or higher rank
             if node.name in {"h2", "h3", "h4", "h5", "h6"}:
                 if self._heading_level(node.name) <= start_level:
                     break
 
-            if node.name == "table":
+            if node.name == "table" and self._is_data_table(node):
                 return node
 
         return None
+
+    def _find_first_table_in_root(self, content_root: Tag) -> Optional[Tag]:
+        for table in content_root.find_all("table"):
+            if self._is_data_table(table):
+                return table
+        return None
+
+    def _is_data_table(self, table: Tag) -> bool:
+        classes = set(table.get("class", []))
+
+        bad_classes = {
+            "box-Expand_section",
+            "ambox",
+            "cmbox",
+            "metadata",
+            "plainlinks",
+            "vertical-navbox",
+            "navbox"
+        }
+        if classes.intersection(bad_classes):
+            return False
+
+        rows = self._get_table_rows(table)
+        if len(rows) < 2:
+            return False
+
+        th_count = 0
+        td_count = 0
+        for row in rows:
+            for child in row.children:
+                if not isinstance(child, Tag):
+                    continue
+                if child.name == "th":
+                    th_count += 1
+                elif child.name == "td":
+                    td_count += 1
+
+        return th_count > 0 and td_count >= 4
 
     def _extract_header_and_rows(self, table: Tag) -> Tuple[str, List[str]]:
         thead = table.find("thead", recursive=False)
